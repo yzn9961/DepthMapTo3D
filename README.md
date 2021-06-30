@@ -18,6 +18,10 @@
 
 ![](./demon/Depth_livingroom.png)
 
+## 空洞填充
+
+![](./demon/holefilled.png)
+
 ## 三维重建效果
 
 ![](./demon/三维重建客厅.gif)
