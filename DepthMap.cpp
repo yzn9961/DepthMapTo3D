@@ -21,6 +21,7 @@ int rows_l;
 int cols_l;
 int rows_r;
 int cols_r;
+typedef Matrix<double,6,1> Vector6d;
 
 void Getparameter()
 {
@@ -89,7 +90,7 @@ Mat show_stereoCalib(Mat rectifyImageL,Mat rectifyImageR) //展示双目立体�
 }
 //点云绘制
 void showPointCloud(
-    const vector<Vector4d, Eigen::aligned_allocator<Vector4d>> &pointcloud);
+    const vector<Vector6d, Eigen::aligned_allocator<Vector6d>>&pointcloud);
 int main(int argc,char**argv)
 {   if(argc != 2)
     {
@@ -115,17 +116,17 @@ int main(int argc,char**argv)
     cv::Mat right_src = raw(Rrect);//CV_8UC1
     
     /// 畸变校正 ///
-    Mat rectifyImageL,rectifyImageR;
+    Mat rectifyImageL,rectifyImageR,rectifyImageL_gray,rectifyImageR_gray;
     remap(left_src, rectifyImageL, M1l,M2l, INTER_LINEAR);
     remap(right_src, rectifyImageR, M1r,M2r, INTER_LINEAR);
     //imshow("Left",rectifyImageL);
     imshow("Stereo Calibra",show_stereoCalib(rectifyImageL,rectifyImageR));
-    cvtColor(rectifyImageL,rectifyImageL,COLOR_BGR2GRAY);
-    cvtColor(rectifyImageR,rectifyImageR,COLOR_BGRA2GRAY);
+    cvtColor(rectifyImageL,rectifyImageL_gray,COLOR_BGR2GRAY);
+    cvtColor(rectifyImageR,rectifyImageR_gray,COLOR_BGRA2GRAY);
     //// 计算深度图 ////
     cv::Ptr<cv::StereoSGBM> sgbm = cv::StereoSGBM::create(0, 96, 9, 8 * 9 * 9, 32 * 9 * 9, 1, 63, 10, 100, 32); 
     cv::Mat disparity_sgbm, disparity;
-    sgbm->compute(rectifyImageL, rectifyImageR, disparity_sgbm);
+    sgbm->compute(rectifyImageL_gray, rectifyImageR_gray, disparity_sgbm);
     disparity_sgbm.convertTo(disparity, CV_32F,1.0 / 16.0f);
     //cv::imshow("Depth Map origin",disparity_sgbm);//深度图像
     Mat goodlook;// good to look
@@ -136,19 +137,35 @@ int main(int argc,char**argv)
     //// 三维重建 ////
     Mat Point3D;
     cv::reprojectImageTo3D(disparity,Point3D,Q,true,-1);//计算三维空间点坐标
-    vector<Vector4d, Eigen::aligned_allocator<Vector4d>> pointcloud;//点云集
+    vector<Vector6d, Eigen::aligned_allocator<Vector6d>>pointcloud;//点云集
+    cout << "准备存储点云"<< endl;
     for (int v = 0; v < 480; v++)//行
            for (int u = 0; u < 640; u++) {//列
                if (disparity.at<float>(v, u) <= 0.0 || disparity.at<float>(v, u) >= 96.0) continue;//将误匹配点省略
-               Vector4d point(Point3D.at<Vec3f>(v,u)[0], Point3D.at<Vec3f>(v,u)[1], Point3D.at<Vec3f>(v,u)[2], rectifyImageL.at<uchar>(v, u) / 255.0); // 前三维为xyz,第四维为颜色，归一化颜色值
+               /*
+               Vector6f point(Point3D.at<Vec3f>(v,u)[0],
+                       Point3D.at<Vec3f>(v,u)[1],
+                       Point3D.at<Vec3f>(v,u)[2],
+                       rectifyImageL.at<Vec3b>(v, u)[0],rectifyImageL.at<Vec3b>(v,u)[0]); // 前三维为xyz,第四维为颜色，归一化颜色值
+                       */
+              // cout<<"正在处理第("<<v<<","<<u<<")位置的像素！";
+               Vector6d point(6);
+               point << (double)Point3D.at<Vec3f>(v,u)[0], //X
+                        (double)Point3D.at<Vec3f>(v,u)[1], //Y
+                        (double)Point3D.at<Vec3f>(v,u)[2], //Z
+                        rectifyImageL.data[v * rectifyImageL.step + u * rectifyImageL.channels()+2], //R
+                        rectifyImageL.data[v * rectifyImageL.step + u * rectifyImageL.channels() + 1], //G
+                        rectifyImageL.data[v * rectifyImageL.step + u * rectifyImageL.channels()]; //B
+
                pointcloud.push_back(point);//将点-颜色存储到容器中
            }
     imshow("src",left_src);
     cv::waitKey(0);
+    cout << "有效点云数量为："<<pointcloud.size()<<endl;
     showPointCloud(pointcloud);
 }
 
-void showPointCloud(const vector<Vector4d, Eigen::aligned_allocator<Vector4d>> &pointcloud) {
+void showPointCloud(const vector<Vector6d, Eigen::aligned_allocator<Vector6d>>&pointcloud) {
 
     if (pointcloud.empty()) {
         cerr << "Point cloud is empty!" << endl;
@@ -178,7 +195,7 @@ void showPointCloud(const vector<Vector4d, Eigen::aligned_allocator<Vector4d>> &
         /////// 真正的绘图部分 //////////
         glBegin(GL_POINTS);//点设置的开始
         for (auto &p: pointcloud) {//auto根据后面的变量值自行判断变量类型，继承点云
-            glColor3f(p[3], p[3], p[3]);//RGB三分量相等即是灰度图像
+            glColor3d(p[3]/255.0, p[4]/255.0, p[5]/255.0);//RGB三分量相等即是灰度图像
             glVertex3d(p[0], p[1], p[2]);//确定点坐标
         }
         glEnd();//点设置的结束
@@ -188,4 +205,45 @@ void showPointCloud(const vector<Vector4d, Eigen::aligned_allocator<Vector4d>> &
     }
     return;
 }
+
+/*
+void showPointCloud(const vector<Vector6d, Eigen::aligned_allocator<Vector6d>> &pointcloud) {
+
+    if (pointcloud.empty()) {
+        cerr << "Point cloud is empty!" << endl;
+        return;
+    }
+
+    pangolin::CreateWindowAndBind("Point Cloud", 1024, 768);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    pangolin::OpenGlRenderState s_cam(
+        pangolin::ProjectionMatrix(1024, 768, 500, 500, 512, 389, 0.1, 1000),
+        pangolin::ModelViewLookAt(0, -0.1, -1.8, 0, 0, 0, 0.0, -1.0, 0.0)
+    );
+
+    pangolin::View &d_cam = pangolin::CreateDisplay()
+        .SetBounds(0.0, 1.0, pangolin::Attach::Pix(175), 1.0, -1024.0f / 768.0f)
+        .SetHandler(new pangolin::Handler3D(s_cam));
+
+    while (pangolin::ShouldQuit() == false) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        d_cam.Activate(s_cam);
+        glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
+
+        glPointSize(2);
+        glBegin(GL_POINTS);
+        for (auto &p: pointcloud) {
+            glColor3d(p[3] / 255.0, p[4] / 255.0, p[5] / 255.0);
+            glVertex3d(p[0], p[1], p[2]);
+        }
+        glEnd();
+        pangolin::FinishFrame();
+        usleep(5000);   // sleep 5 ms
+    }
+    return;
+}*/
 
